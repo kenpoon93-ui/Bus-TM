@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>豐景園實時交通 (v7 終極穩定版)</title>
+    <title>屯門實時交通 (v8 擴展版)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -19,7 +19,7 @@
     <div class="max-w-md mx-auto p-4 pt-6 pb-20">
         <div class="flex justify-between items-center mb-6">
             <div>
-                <h1 class="text-2xl font-bold">豐景園實時交通</h1>
+                <h1 class="text-2xl font-bold">屯門實時交通</h1>
                 <p id="status" class="text-sm text-gray-500 dark:text-gray-400 mt-1">載入中...</p>
             </div>
             <button onclick="fetchData()" class="p-3 bg-white dark:bg-gray-800 rounded-full shadow hover:bg-gray-50 dark:hover:bg-gray-700 active:scale-95 transition-transform">
@@ -27,36 +27,51 @@
             </button>
         </div>
 
+        <!-- 🔴 離開屯門 -->
         <div class="mb-8">
             <h2 class="text-lg font-semibold mb-3 flex items-center text-red-500">
-                <span class="mr-2">🔴</span> 離開屯門 (豐景園站)
+                <span class="mr-2">🔴</span> 離開屯門
             </h2>
             <div id="kmb-outbound" class="space-y-3"></div>
         </div>
 
+        <!-- 🟢 返回屯門 (港島) -->
         <div class="mb-8">
             <h2 class="text-lg font-semibold mb-3 flex items-center text-green-500">
                 <span class="mr-2">🟢</span> 返回屯門 (港島上車)
             </h2>
-            <div id="kmb-inbound" class="space-y-3"></div>
+            <div id="kmb-inbound-hki" class="space-y-3"></div>
         </div>
 
+        <!-- 🚈 輕鐵 -->
         <div class="mb-8">
             <h2 class="text-lg font-semibold mb-3 flex items-center text-orange-500">
                 <span class="mr-2">🚈</span> 輕鐵 (豐景園站)
             </h2>
             <div id="lrt-data" class="space-y-3"></div>
         </div>
+
+        <!-- 🟣 返回屯門 (新界/九龍東) -->
+        <div class="mb-8">
+            <h2 class="text-lg font-semibold mb-3 flex items-center text-purple-500">
+                <span class="mr-2">🟣</span> 返回屯門 (新界 / 九龍東)
+            </h2>
+            <div id="kmb-inbound-other" class="space-y-3"></div>
+        </div>
     </div>
 
     <script>
-        const APP_VER = 'v7';
-        const TARGET_STOPS = ['豐景園', '利源東街', '永吉街', '文華里'];
-        const TARGET_ROUTES = ['60X', '60M', '62X', '62P', '263', '960', '961'];
+        const APP_VER = 'v8'; 
+        // 增加新車站
+        const TARGET_STOPS = ['豐景園', '御海灣', '利源東街', '永吉街', '文華里', '沙田站', '城門隧道轉車站', '駿業里'];
+        // 增加新路線
+        const TARGET_ROUTES = ['60X', '60M', '62X', '62P', '263', '960', '961', '258D', '259D'];
+        // 屯門區目的地關鍵字（用作判斷方向）
+        const TM_DESTINATIONS = ['屯門', '山景', '建生', '兆康', '龍門', '寶田'];
+        
         let myStopsMap = {}; 
         let countdownInterval;
 
-        // 計算時間，濾除負數時間
         function getMinutes(targetDateStr) {
             const target = new Date(targetDateStr);
             const now = new Date();
@@ -72,7 +87,7 @@
                 if (Object.keys(parsed).length > 0) return parsed;
             }
 
-            document.getElementById('status').innerText = '首次運行：正在配對車站...';
+            document.getElementById('status').innerText = '正在配對新增車站...';
             try {
                 const res = await fetch("https://data.etabus.gov.hk/v1/transport/kmb/stop");
                 const json = await res.json();
@@ -82,7 +97,7 @@
                     TARGET_STOPS.forEach(target => {
                         if (s.name_tc && s.name_tc.includes(target)) {
                             if (!map[target]) map[target] = [];
-                            map[target].push(s.stop); // 儲存該站名對應的所有 Stop IDs
+                            map[target].push(s.stop);
                         }
                     });
                 });
@@ -107,11 +122,9 @@
                 return;
             }
 
-            // 集合所有目標車站嘅 Stop ID
             let allStopIds = [];
             Object.values(myStopsMap).forEach(ids => allStopIds.push(...ids));
 
-            // 改用 Stop-ETA API，穩定獲取該站點所有班次資料
             const kmbPromises = allStopIds.map(stopId => 
                 fetch(`https://data.etabus.gov.hk/v1/transport/kmb/stop-eta/${stopId}`)
                 .then(r => r.json())
@@ -129,15 +142,13 @@
             ]);
 
             let kmbOut = {}; 
-            let kmbIn = {};  
+            let kmbInHKI = {};  
+            let kmbInOther = {}; 
 
             kmbResponses.flat().forEach(eta => {
                 if (!eta || !eta.eta) return;
-                
-                // 只保留你指定要搭嘅巴士線
                 if (!TARGET_ROUTES.includes(eta.route)) return;
 
-                // 搵返呢個 ETA 係屬於邊個車站
                 let stopName = '';
                 for (const [name, ids] of Object.entries(myStopsMap)) {
                     if (ids.includes(eta.req_stop_id)) stopName = name;
@@ -146,28 +157,43 @@
 
                 const dest = eta.dest_tc;
                 const timeStr = getMinutes(eta.eta);
-                if (timeStr === '已開出') return; // 過期資料唔顯示
+                if (timeStr === '已開出') return; 
 
                 const timeColor = timeStr === '即將抵達' || parseInt(timeStr) <= 3 ? 'text-red-500 font-bold' : 'text-gray-900 dark:text-white';
                 const timeHtml = `<span class="${timeColor}">${timeStr}</span>`;
 
-                // 分區邏輯
-                if (stopName === '豐景園') {
-                    if (!dest.includes('屯門') && !dest.includes('山景') && !dest.includes('建生') && !dest.includes('兆康')) {
-                        const key = `${eta.route}_${dest}`;
-                        if (!kmbOut[key]) kmbOut[key] = { route: eta.route, dest: dest, times: [] };
+                // 判斷目的地是否在屯門區內
+                const isTmDest = TM_DESTINATIONS.some(d => dest.includes(d));
+                const key = `${eta.route}_${stopName}_${dest}`;
+
+                // 1. 豐景園 / 御海灣
+                if (['豐景園', '御海灣'].some(s => stopName.includes(s))) {
+                    if (!isTmDest) {
+                        // 離開屯門 (例如去鯉魚門、市區)
+                        if (!kmbOut[key]) kmbOut[key] = { route: eta.route, stop: stopName, dest: dest, times: [] };
                         if (kmbOut[key].times.length < 3) kmbOut[key].times.push(timeHtml);
+                    } else if (stopName === '御海灣' && dest.includes('龍門')) {
+                        // 御海灣往龍門居 (屯門區內/返屯門)
+                        if (!kmbInOther[key]) kmbInOther[key] = { route: eta.route, stop: stopName, dest: dest, times: [] };
+                        if (kmbInOther[key].times.length < 3) kmbInOther[key].times.push(timeHtml);
                     }
-                } else if (['利源東街', '永吉街', '文華里'].includes(stopName)) {
-                    if (dest.includes('屯門') || dest.includes('山景') || dest.includes('建生')) {
-                        const key = `${eta.route}_${stopName}`;
-                        if (!kmbIn[key]) kmbIn[key] = { route: eta.route, stop: stopName, dest: dest, times: [] };
-                        if (kmbIn[key].times.length < 3) kmbIn[key].times.push(timeHtml);
+                } 
+                // 2. 港島區
+                else if (['利源東街', '永吉街', '文華里'].some(s => stopName.includes(s))) {
+                    if (isTmDest) {
+                        if (!kmbInHKI[key]) kmbInHKI[key] = { route: eta.route, stop: stopName, dest: dest, times: [] };
+                        if (kmbInHKI[key].times.length < 3) kmbInHKI[key].times.push(timeHtml);
+                    }
+                } 
+                // 3. 沙田 / 城隧 / 觀塘(駿業里)
+                else if (['沙田站', '城門隧道轉車站', '駿業里'].some(s => stopName.includes(s))) {
+                    if (isTmDest) {
+                        if (!kmbInOther[key]) kmbInOther[key] = { route: eta.route, stop: stopName, dest: dest, times: [] };
+                        if (kmbInOther[key].times.length < 3) kmbInOther[key].times.push(timeHtml);
                     }
                 }
             });
 
-            // 渲染畫面
             const renderKmbCard = (title, subtitle, times) => `
                 <div class="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700">
                     <div class="flex justify-between items-end">
@@ -181,19 +207,28 @@
                     </div>
                 </div>`;
 
+            // 渲染：離開屯門
             let outHtml = '';
             Object.values(kmbOut).sort((a,b) => a.route.localeCompare(b.route)).forEach(item => {
-                outHtml += renderKmbCard(item.route, `往 ${item.dest}`, item.times);
+                outHtml += renderKmbCard(item.route, `於 ${item.stop} 上車 (往 ${item.dest})`, item.times);
             });
             document.getElementById('kmb-outbound').innerHTML = outHtml || '<p class="text-sm text-gray-500 p-2">暫時沒有班次資料</p>';
 
-            let inHtml = '';
-            Object.values(kmbIn).sort((a,b) => (a.route + a.stop).localeCompare(b.route + b.stop)).forEach(item => {
-                inHtml += renderKmbCard(item.route, `於 ${item.stop} 上車 (往 ${item.dest})`, item.times);
+            // 渲染：返回屯門 (港島)
+            let inHkiHtml = '';
+            Object.values(kmbInHKI).sort((a,b) => (a.route + a.stop).localeCompare(b.route + b.stop)).forEach(item => {
+                inHkiHtml += renderKmbCard(item.route, `於 ${item.stop} 上車 (往 ${item.dest})`, item.times);
             });
-            document.getElementById('kmb-inbound').innerHTML = inHtml || '<p class="text-sm text-gray-500 p-2">暫時沒有班次資料</p>';
+            document.getElementById('kmb-inbound-hki').innerHTML = inHkiHtml || '<p class="text-sm text-gray-500 p-2">暫時沒有班次資料</p>';
 
-            // 處理輕鐵資料
+            // 渲染：返回屯門 (新界/九龍東)
+            let inOtherHtml = '';
+            Object.values(kmbInOther).sort((a,b) => (a.route + a.stop).localeCompare(b.route + b.stop)).forEach(item => {
+                inOtherHtml += renderKmbCard(item.route, `於 ${item.stop} 上車 (往 ${item.dest})`, item.times);
+            });
+            document.getElementById('kmb-inbound-other').innerHTML = inOtherHtml || '<p class="text-sm text-gray-500 p-2">暫時沒有班次資料</p>';
+
+            // 渲染：輕鐵
             let lrtHtml = '';
             if (!lrtResponse || lrtResponse.status !== 1) {
                 lrtHtml = '<div class="text-sm text-red-500 bg-red-50 dark:bg-red-900/20 p-3 rounded-lg">無法載入輕鐵資料，請稍後再試。</div>';
